@@ -39,12 +39,9 @@ const outputStream = new Writable({
       const req = chunk.req
       const res = chunk.res
       const reqUrl = req.originalUrl || req.url
-      const requestSize = parseInt(req['content-length'], 10)
+      const requestSize = req['content-length']
       const responseTimeMs = chunk['response-time']
-      const responseTime = [
-        Math.trunc(responseTimeMs / 1000),
-        (responseTimeMs % 1000) * 1000,
-      ]
+      const responseTimeSeconds = responseTimeMs / 1000
       // const referrer = req.headers.referer || req.headers.referrer
       chunk.httpRequest = {
         requestMethod: req.method,
@@ -55,10 +52,7 @@ const outputStream = new Writable({
         userAgent: req['user-agent'],
         remoteIp: req['remote-addr'],
         // referer: referrer,
-        latency: {
-          seconds: responseTime[0],
-          nanos: responseTime[1],
-        },
+        latency: responseTimeSeconds + 's',
         protocol: req.protocol,
       }
     }
