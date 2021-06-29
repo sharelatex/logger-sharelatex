@@ -21,45 +21,41 @@ const errSerializer = function (err) {
   }
 }
 
-const SEVERITY_MAPPING = new Map([
-  [10, 'DEBUG'],
-  [20, 'DEBUG'],
-  [30, 'INFO'],
-  [40, 'WARNING'],
-  [50, 'ERROR'],
-  [60, 'CRITICAL'],
-])
-
-const outputStream = new Writable({
-  objectMode: true,
-  write(chunk, encoding, callback) {
-    chunk.severity = SEVERITY_MAPPING.get(chunk.level)
-    chunk.message = chunk.msg
-    if (chunk.req && chunk.res) {
-      const req = chunk.req
-      const res = chunk.res
-      const reqUrl = req.originalUrl || req.url
-      const requestSize = req['content-length']
-      const responseTimeMs = chunk['response-time']
-      const responseTimeSeconds = responseTimeMs / 1000
-      // const referrer = req.headers.referer || req.headers.referrer
-      chunk.httpRequest = {
-        requestMethod: req.method,
-        requestUrl: reqUrl,
-        requestSize,
-        status: res.statusCode,
-        // responseSize: res.getHeader('content-length'),
-        userAgent: req['user-agent'],
-        remoteIp: req['remote-addr'],
-        // referer: referrer,
-        latency: responseTimeSeconds + 's',
-        protocol: req.protocol,
+function createOutputStream(logName) {
+  return new Writable({
+    objectMode: true,
+    write(log, encoding, callback) {
+      log.severity = bunyan.nameFromLevel[log.level]
+      if (log.err) {
+        log['@type'] =
+          'type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ReportedErrorEvent'
+        log.message = log.err.stack
+        log.serviceContext = { service: logName }
+      } else {
+        log.message = log.msg
       }
-    }
-    console.log(JSON.stringify(chunk))
-    callback()
-  },
-})
+      if (log.req && log.res) {
+        const req = log.req
+        const res = log.res
+        const responseTimeMs = log['response-time']
+        const responseTimeSeconds = responseTimeMs / 1000
+        log.httpRequest = {
+          requestMethod: req.method,
+          requestUrl: req.url,
+          requestSize: req['content-length'],
+          status: res.statusCode,
+          responseSize: res['content-length'],
+          userAgent: req['user-agent'],
+          remoteIp: req['remote-addr'],
+          referer: req.referrer,
+          latency: responseTimeSeconds + 's',
+        }
+      }
+      console.log(JSON.stringify(log, bunyan.safeCycles()))
+      setImmediate(callback)
+    },
+  })
+}
 
 const Logger = (module.exports = {
   initialize(name) {
@@ -73,15 +69,12 @@ const Logger = (module.exports = {
       name,
       serializers: {
         err: errSerializer,
-        req: bunyan.stdSerializers.req,
-        res: bunyan.stdSerializers.res,
       },
       streams: [
-        { level: this.defaultLevel, stream: process.stdout },
         {
           level: this.defaultLevel,
           type: 'raw',
-          stream: outputStream,
+          stream: createOutputStream(name),
         },
       ],
     })
