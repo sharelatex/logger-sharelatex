@@ -4,6 +4,7 @@ const fs = require('fs')
 const yn = require('yn')
 const OError = require('@overleaf/o-error')
 const GCPLogging = require('@google-cloud/logging-bunyan')
+const { Writable } = require('stream')
 
 // bunyan error serializer
 const errSerializer = function (err) {
@@ -16,9 +17,55 @@ const errSerializer = function (err) {
     stack: OError.getFullStack(err),
     info: OError.getFullInfo(err),
     code: err.code,
-    signal: err.signal
+    signal: err.signal,
   }
 }
+
+const SEVERITY_MAPPING = new Map([
+  [10, 'DEBUG'],
+  [20, 'DEBUG'],
+  [30, 'INFO'],
+  [40, 'WARNING'],
+  [50, 'ERROR'],
+  [60, 'CRITICAL'],
+])
+
+const outputStream = new Writable({
+  objectMode: true,
+  write(chunk, encoding, callback) {
+    chunk.severity = SEVERITY_MAPPING.get(chunk.level)
+    chunk.message = chunk.msg
+    if (chunk.req && chunk.res) {
+      const req = chunk.req
+      const res = chunk.res
+      const reqUrl = req.originalUrl || req.url
+      const requestSize = parseInt(req['content-length'], 10)
+      const responseTimeMs = chunk['response-time']
+      const responseTime = [
+        Math.trunc(responseTimeMs / 1000),
+        (responseTimeMs % 1000) * 1000,
+      ]
+      // const referrer = req.headers.referer || req.headers.referrer
+      chunk.httpRequest = {
+        requestMethod: req.method,
+        requestUrl: reqUrl,
+        requestSize,
+        status: res.statusCode,
+        // responseSize: res.getHeader('content-length'),
+        userAgent: req['user-agent'],
+        remoteIp: req['remote-addr'],
+        // referer: referrer,
+        latency: {
+          seconds: responseTime[0],
+          nanos: responseTime[1],
+        },
+        protocol: req.protocol,
+      }
+    }
+    console.log(JSON.stringify(chunk))
+    callback()
+  },
+})
 
 const Logger = (module.exports = {
   initialize(name) {
@@ -33,9 +80,16 @@ const Logger = (module.exports = {
       serializers: {
         err: errSerializer,
         req: bunyan.stdSerializers.req,
-        res: bunyan.stdSerializers.res
+        res: bunyan.stdSerializers.res,
       },
-      streams: [{ level: this.defaultLevel, stream: process.stdout }]
+      streams: [
+        { level: this.defaultLevel, stream: process.stdout },
+        {
+          level: this.defaultLevel,
+          type: 'raw',
+          stream: outputStream,
+        },
+      ],
     })
     this._setupRingBuffer()
     this._setupStackdriver()
@@ -63,8 +117,8 @@ const Logger = (module.exports = {
   async getTracingEndTimeMetadata() {
     const options = {
       headers: {
-        'Metadata-Flavor': 'Google'
-      }
+        'Metadata-Flavor': 'Google',
+      },
     }
     const uri = `http://metadata.google.internal/computeMetadata/v1/project/attributes/${this.loggerName}-setLogLevelEndTime`
     const res = await fetch(uri, options)
@@ -122,7 +176,7 @@ const Logger = (module.exports = {
           url: req.originalUrl,
           query: req.query,
           headers: req.headers,
-          ip: req.ip
+          ip: req.ip,
         }
       }
       // recreate error objects that have been converted to a normal object
@@ -233,7 +287,7 @@ const Logger = (module.exports = {
       this.logger.addStream({
         level: 'trace',
         type: 'raw',
-        stream: this.ringBuffer
+        stream: this.ringBuffer,
       })
     } else {
       this.ringBuffer = null
@@ -247,7 +301,7 @@ const Logger = (module.exports = {
     }
     const stackdriverClient = new GCPLogging.LoggingBunyan({
       logName: this.loggerName,
-      serviceContext: { service: this.loggerName }
+      serviceContext: { service: this.loggerName },
     })
     this.logger.addStream(stackdriverClient.stream(this.defaultLevel))
   },
@@ -273,7 +327,7 @@ const Logger = (module.exports = {
       // re-check log level every minute
       this.checkInterval = setInterval(this.checkLogLevel.bind(this), 1000 * 60)
     }
-  }
+  },
 })
 
 Logger.initialize('default-sharelatex')
